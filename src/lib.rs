@@ -11,6 +11,8 @@ mod tests {
     use anyhow::Result;
     use serde::{Deserialize, Serialize};
 
+    use crate::resource_library::ResourceLibraryReader;
+
     use self::resource_library::ResourceLibrary;
 
     use super::*;
@@ -106,6 +108,32 @@ mod tests {
         let lib2 = ResourceLibrary::read_from_file(file)?;
 
         assert_eq!(lib1, lib2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_file_reader() -> Result<()> {
+        let mut lib1 = ResourceLibrary::new();
+        lib1.write_data("test/a.txt".to_owned(), "Test file A".bytes().collect())?;
+        lib1.write_data("test/b.txt".to_owned(), "Test file B ".bytes().collect())?;
+        lib1.write_data("test/c.txt".to_owned(), "Test file C  ".bytes().collect())?;
+
+        println!("Writing data...");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open("test.rcslib")?;
+        lib1.clone().write_to_file(file)?;
+
+        let mut reader = ResourceLibraryReader::new("test.rcslib")?;
+        let data = reader.read_file("test/b.txt")?;
+
+        println!("output data: '{}'", std::str::from_utf8(&data).unwrap());
+
+        assert_eq!(lib1.read_data("test/b.txt")?, &data[..]);
 
         Ok(())
     }

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs::File, io::{Read, Write}};
+use std::{collections::BTreeMap, fs::File, io::{Read, Seek, Write}, path::Path};
 
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
@@ -76,11 +76,11 @@ impl ResourceLibrary {
 
         // Since map is a tree map, iterator will be in order, sorted by filename
         for (filename, data) in self.map.into_iter() {
-            let f_struct = FileData { filename, encrypted: false, data };
+            let f_struct = FileData { encrypted: false, data };
             let f_data = postcard::to_allocvec(&f_struct)?;
 
             // Write the current number of bytes in the buffer to our index
-            let slice_tuple = (data_vec.len() as u64, f_data.len() as u64);
+            let slice_tuple = (filename.clone(), data_vec.len() as u64, f_data.len() as u64);
             index.push(slice_tuple);
 
             // Write to the data buffer
@@ -91,16 +91,20 @@ impl ResourceLibrary {
         let index = index.into_boxed_slice();
         let data = data_vec.into_boxed_slice();
 
-        // Create the struct from the buffers
-        let lib_file_struct = LibraryFile { index, data };
-
-        let lib_file_data = postcard::to_allocvec(&lib_file_struct)?;
+        let index_data = postcard::to_allocvec(&index)?;
 
         // Write header
         file.write(&HEADER_BYTES)?;
 
-        // Write data
-        file.write(&lib_file_data)?;
+        // Write metadataa
+        file.write(&index_data.len().to_be_bytes())?;
+        file.write(&data.len().to_be_bytes())?;
+
+        // Write index data
+        file.write(&index_data)?;
+
+        // Write file data
+        file.write(&data)?;
 
         Ok(())
     }
@@ -113,36 +117,98 @@ impl ResourceLibrary {
             bail!("File header does not match!");
         }
 
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
+        // Read metadata
+        let mut index_size = [0u8; 8];
+        let mut data_size = [0u8; 8];
 
-        let lib_file_struct: LibraryFile = postcard::from_bytes(&bytes)?;
+        file.read(&mut index_size)?;
+        file.read(&mut data_size)?;
+
+        let index_size = u64::from_be_bytes(index_size);
+        let data_size = u64::from_be_bytes(data_size);
+
+        let mut index_data = vec![0u8; index_size as usize];
+        let mut data = vec![0u8; data_size as usize];
+
+        file.read(&mut index_data)?;
+        file.read(&mut data)?;
+
+        let index: Box<[(String, u64, u64)]> = postcard::from_bytes(&index_data)?;
 
         let mut file_data = Vec::new();
-        file_data.reserve(lib_file_struct.index.len());
-        for (pointer, size) in lib_file_struct.index.iter() {
-            let data = &lib_file_struct.data[*pointer as usize..*pointer as usize + *size as usize];
+        file_data.reserve(index.len());
+        for (filename, pointer, size) in index.iter() {
+            let data = &data[*pointer as usize..*pointer as usize + *size as usize];
             let struct_: FileData = postcard::from_bytes(data)?;
 
-            file_data.push(struct_);
+            file_data.push((filename.clone(), struct_));
         }
 
         let mut out_lib = ResourceLibrary::new();
-        file_data.into_iter().try_for_each(|struct_| out_lib.write_data(struct_.filename, struct_.data))?;
+        file_data.into_iter().try_for_each(|(filename, struct_)| out_lib.write_data(filename, struct_.data))?;
 
         Ok(out_lib)
     }
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct FileData {
-    filename: String,
+struct FileData {
     encrypted: bool,
     data: Box<[u8]>
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct LibraryFile {
-    index: Box<[(u64, u64)]>,
-    data: Box<[u8]>
+pub struct ResourceLibraryReader {
+    file: File,
+    index: Box<[(String, u64, u64)]>,
+    data_pointer: u64
+}
+
+impl ResourceLibraryReader {
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<ResourceLibraryReader> {
+        let mut file = File::open(path)?;
+
+        let mut first_10 = [0u8; 10];
+        file.read(&mut first_10)?;
+
+        if first_10 != HEADER_BYTES {
+            bail!("File header does not match!");
+        }
+
+        // Read metadata
+        let mut index_size = [0u8; 8];
+        let mut data_size = [0u8; 8];
+
+        file.read(&mut index_size)?;
+        file.read(&mut data_size)?;
+
+        let index_size = u64::from_be_bytes(index_size);
+        let _data_size = u64::from_be_bytes(data_size);
+
+        let mut index_data = vec![0u8; index_size as usize];
+
+        file.read(&mut index_data)?;
+
+        let index: Box<[(String, u64, u64)]> = postcard::from_bytes(&index_data)?;
+
+        let data_pointer = file.stream_position()?;
+
+        Ok(ResourceLibraryReader { file, index, data_pointer })
+    }
+
+    pub fn read_file<'a>(&'a mut self, path: &str) -> Result<Box<[u8]>> {
+        let index = self.index.binary_search_by(|(file_path, _, _)| {
+            file_path[..].cmp(path)
+        }).map_err(|_| anyhow!("File not found!"))?;
+
+        let index = &self.index[index];
+        
+        self.file.seek(std::io::SeekFrom::Start(self.data_pointer + index.1))?;
+
+        let mut buffer = vec![0u8; index.2 as usize];
+        self.file.read(&mut buffer)?;
+
+        let file_data: FileData = postcard::from_bytes(&buffer)?;
+        
+        Ok(file_data.data)
+    }
 }
