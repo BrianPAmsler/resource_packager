@@ -135,14 +135,14 @@ impl ResourceLibrary {
 }
 
 #[derive(Serialize, Deserialize)]
-struct FileData {
+pub struct FileData {
     filename: String,
     encrypted: bool,
     data: Box<[u8]>
 }
 
 #[derive(Serialize, Deserialize)]
-struct LibraryFile {
+pub struct LibraryFile {
     index: Box<[(u64, u64)]>,
     data: Box<[u8]>
 }
