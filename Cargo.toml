@@ -1,0 +1,12 @@
+[package]
+name = "resource_packager"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.79"
+lzma = "0.2.2"
+postcard = {version="1.0.8", features=["alloc"]}
+serde = "1.0.196"
