@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs::File, io::{Read, Seek, Write}, path::Path};
+use std::{collections::BTreeMap, fmt::Debug, fs::File, hash::{Hash, Hasher}, io::{ErrorKind, Read, Seek, SeekFrom, Write}, path::Path};
 
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
@@ -38,9 +38,80 @@ fn verify_string(string: String) -> Result<String> {
 
     Ok(string)
 }
-#[derive(Debug, PartialEq, Eq, Clone)]
+
+struct ByteStream {
+    bytes: Box<[u8]>,
+    position: usize
+}
+
+impl Read for ByteStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let bytes_read = usize::min(buf.len(), self.bytes.len() - self.position);
+        buf[..bytes_read].copy_from_slice(&self.bytes[self.position..self.position + bytes_read]);
+
+        self.position += bytes_read;
+
+        Ok(bytes_read)
+    }
+}
+
+impl Write for ByteStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let bytes_written = usize::min(buf.len(), self.bytes.len() - self.position);
+
+        self.bytes[self.position..self.position + bytes_written].copy_from_slice(&buf[..bytes_written]);
+
+        self.position += bytes_written;
+
+        Ok(bytes_written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        // I don't think this needs to do anything
+        Ok(())
+    }
+}
+
+impl Seek for ByteStream {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        match pos {
+            SeekFrom::Start(offset) => self.position = offset as usize,
+            SeekFrom::End(offset) => self.position = (self.bytes.len() as i64 + offset) as usize,
+            SeekFrom::Current(offset) => self.position = (self.position as i64 + offset) as usize,
+        }
+
+        if self.position > self.bytes.len() {
+            self.position = self.bytes.len();
+        }
+
+        Ok(self.position as u64)
+    }
+}
+
+impl Debug for ByteStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.bytes.fmt(f)
+    }
+}
+
+impl From<Box<[u8]>> for ByteStream {
+    fn from(value: Box<[u8]>) -> Self {
+        ByteStream { bytes: value, position: 0 }
+    }
+}
+
+impl From<Vec<u8>> for ByteStream {
+    fn from(value: Vec<u8>) -> Self {
+        ByteStream { bytes: value.into_boxed_slice(), position: 0 }
+    }
+}
+
+pub trait Resource: Read + Seek + Debug {}
+impl<T: Read + Seek + Debug> Resource for T {}
+
+#[derive(Debug)]
 pub struct ResourceLibrary {
-    map: BTreeMap<String, Box<[u8]>>
+    map: BTreeMap<String, Box<dyn Resource>>
 }
 
 impl ResourceLibrary {
@@ -48,43 +119,56 @@ impl ResourceLibrary {
         ResourceLibrary { map: BTreeMap::new() }
     }
 
-    pub fn write_struct<'a, T: Serialize + Deserialize<'a>>(&mut self, path: String, data: &T) -> Result<()> {
-        let bytes = postcard::to_allocvec(data)?;
-
-        self.map.insert(verify_string(path)?, bytes.into_boxed_slice());
-
-        Ok(())
-    }
-
-    pub fn read_struct<'a, T: Serialize + Deserialize<'a>>(&'a self, path: &str) -> Result<T> {
-        let bytes = self.map.get(verify_str(path)?).ok_or(anyhow!("No resource exists at path '{}'.", path))?;
-
-        let struct_: T = postcard::from_bytes(&bytes)?;
-
-        Ok(struct_)
-    }
-
     pub fn write_data(&mut self, path: String, data: Box<[u8]>) -> Result<()> {
-        self.map.insert(verify_string(path)?, data);
+        self.map.insert(verify_string(path)?, Box::new(ByteStream::from(data)));
 
         Ok(())
     }
 
-    pub fn read_data<'a>(&'a self, path: &str) -> Result<&'a [u8]> {
-        self.map.get(verify_str(path)?).ok_or(anyhow!("No resource exists at path '{}'", path)).map(|data| &data[..])
+    pub fn write_stream<T: Read + Seek + Debug + 'static>(&mut self, path: String, stream: T) -> Result<()> {
+        self.map.insert(verify_string(path)?, Box::new(stream));
+
+        Ok(())
+    }
+
+    pub fn read_data<'a>(&'a mut self, path: &str) -> Result<Box<[u8]>> {
+        match self.map.get_mut(verify_str(path)?).ok_or(anyhow!("No resource exists at path '{}'", path)) {
+            Ok(resource) => {
+                let mut bytes = Vec::new();
+                resource.rewind()?;
+                resource.read_to_end(&mut bytes)?;
+    
+                Ok(bytes.into_boxed_slice())
+            },
+            Err(err) => Err(err)
+        }
     }
 
     pub fn take_data(&mut self, path: &str) -> Result<Box<[u8]>> {
-        self.map.remove(path).ok_or(anyhow!("No resource exists at path '{}'", path))
+        match self.map.remove(path).ok_or(anyhow!("No resource exists at path '{}'", path)) {
+            Ok(mut resource) => {
+                let mut bytes = Vec::new();
+                resource.rewind()?;
+                resource.read_to_end(&mut bytes)?;
+    
+                Ok(bytes.into_boxed_slice())
+            },
+            Err(err) => Err(err)
+        }
     }
 
-    pub fn write_to_file<'a>(self, mut file: File, compression_level: CompressionLevel) -> Result<()> {
+    pub fn write_to_file<'a>(&mut self, mut file: File, compression_level: CompressionLevel) -> Result<()> {
         // Create buffers
         let mut index = Vec::new();
         let mut data_vec = Vec::new();
 
         // Since map is a tree map, iterator will be in order, sorted by filename
-        for (filename, data) in self.map.into_iter() {
+        for (filename, resource) in self.map.iter_mut() {
+            let mut data = Vec::new();
+            resource.rewind()?;
+            resource.read_to_end(&mut data)?;
+            let data = data.into_boxed_slice();
+
             let f_struct = FileData { signature: Box::new([]), data };
 
             let f_data = postcard::to_allocvec(&f_struct)?;
@@ -160,6 +244,10 @@ impl ResourceLibrary {
 
         Ok(out_lib)
     }
+
+    pub fn get_all_files(&self) -> Box<[&str]> {
+        self.map.keys().map(|path| &path[..]).collect()
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -223,5 +311,9 @@ impl ResourceLibraryReader {
         let file_data: FileData = postcard::from_bytes(&decompressed)?;
         
         Ok(file_data.data)
+    }
+
+    pub fn get_all_files(&self) -> Box<[&str]> {
+        self.index.iter().map(|(path, _, _)| &path[..]).collect()
     }
 }
