@@ -6,6 +6,15 @@ use serde::{Deserialize, Serialize};
 const FORBIDDEN_CHARACTERS: &'static str = "\\?%*:|\"<>,;=";
 const HEADER_BYTES: [u8; 10] = [0x67, 0xD7, 0x70, 0x3A, 0x54, 0x3D, 0xDB, 0xF5, 0x17, 0x95]; // This is just a string of random numbers, it has no real signifigance
 
+#[derive(Clone, Copy)]
+pub enum CompressionLevel {
+    Fastest = 1,
+    Fast = 3,
+    Normal = 5,
+    Maximum = 7,
+    Ultra = 9
+}
+
 fn verify_str(str: &str) -> Result<&str> {
     for c in str.chars() {
         for forbidden in FORBIDDEN_CHARACTERS.chars() {
@@ -69,15 +78,19 @@ impl ResourceLibrary {
         self.map.remove(path).ok_or(anyhow!("No resource exists at path '{}'", path))
     }
 
-    pub fn write_to_file(self, mut file: File) -> Result<()> {
+    pub fn write_to_file<'a>(self, mut file: File, compression_level: CompressionLevel) -> Result<()> {
         // Create buffers
         let mut index = Vec::new();
         let mut data_vec = Vec::new();
 
         // Since map is a tree map, iterator will be in order, sorted by filename
         for (filename, data) in self.map.into_iter() {
-            let f_struct = FileData { encrypted: false, data };
+            let f_struct = FileData { signature: Box::new([]), data };
+
             let f_data = postcard::to_allocvec(&f_struct)?;
+
+            // Compress data
+            let f_data = lzma::compress(&f_data, compression_level as u32)?;
 
             // Write the current number of bytes in the buffer to our index
             let slice_tuple = (filename.clone(), data_vec.len() as u64, f_data.len() as u64);
@@ -87,10 +100,6 @@ impl ResourceLibrary {
             data_vec.extend(f_data.into_iter());
         }
 
-        // Convert buffers to boxed slices
-        let index = index.into_boxed_slice();
-        let data = data_vec.into_boxed_slice();
-
         let index_data = postcard::to_allocvec(&index)?;
 
         // Write header
@@ -98,18 +107,18 @@ impl ResourceLibrary {
 
         // Write metadataa
         file.write(&index_data.len().to_be_bytes())?;
-        file.write(&data.len().to_be_bytes())?;
+        file.write(&data_vec.len().to_be_bytes())?;
 
         // Write index data
         file.write(&index_data)?;
 
         // Write file data
-        file.write(&data)?;
+        file.write(&data_vec)?;
 
         Ok(())
     }
 
-    pub fn read_from_file(mut file: File) -> Result<ResourceLibrary> {
+    pub fn read_from_file<'a>(mut file: File) -> Result<ResourceLibrary> {
         let mut first_10 = [0u8; 10];
         file.read(&mut first_10)?;
 
@@ -139,7 +148,9 @@ impl ResourceLibrary {
         file_data.reserve(index.len());
         for (filename, pointer, size) in index.iter() {
             let data = &data[*pointer as usize..*pointer as usize + *size as usize];
-            let struct_: FileData = postcard::from_bytes(data)?;
+            // Decompress data
+            let data = lzma::decompress(data)?;
+            let struct_: FileData = postcard::from_bytes(&data)?;
 
             file_data.push((filename.clone(), struct_));
         }
@@ -153,7 +164,7 @@ impl ResourceLibrary {
 
 #[derive(Serialize, Deserialize)]
 struct FileData {
-    encrypted: bool,
+    signature: Box<[u8]>,
     data: Box<[u8]>
 }
 
@@ -207,7 +218,9 @@ impl ResourceLibraryReader {
         let mut buffer = vec![0u8; index.2 as usize];
         self.file.read(&mut buffer)?;
 
-        let file_data: FileData = postcard::from_bytes(&buffer)?;
+        let decompressed = lzma::decompress(&buffer)?;
+
+        let file_data: FileData = postcard::from_bytes(&decompressed)?;
         
         Ok(file_data.data)
     }

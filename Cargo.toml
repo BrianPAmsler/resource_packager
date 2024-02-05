@@ -7,6 +7,6 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.79"
-lzma = "0.2.2"
 postcard = {version="1.0.8", features=["alloc"]}
+rust-lzma = "0.6.0"
 serde = "1.0.196"

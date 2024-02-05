@@ -11,7 +11,7 @@ mod tests {
     use anyhow::Result;
     use serde::{Deserialize, Serialize};
 
-    use crate::resource_library::ResourceLibraryReader;
+    use crate::resource_library::{CompressionLevel, ResourceLibraryReader};
 
     use self::resource_library::ResourceLibrary;
 
@@ -101,10 +101,10 @@ mod tests {
             .create(true)
             .truncate(true)
             .open("test.rcslib")?;
-        lib1.clone().write_to_file(file)?;
+        lib1.clone().write_to_file(file, CompressionLevel::Fast)?;
 
         println!("Reading data...");
-        let file = File::open("test.rcslib")?;
+        let file = File::open("test/test.rcslib")?;
         let lib2 = ResourceLibrary::read_from_file(file)?;
 
         assert_eq!(lib1, lib2);
@@ -125,8 +125,8 @@ mod tests {
             .write(true)
             .create(true)
             .truncate(true)
-            .open("test.rcslib")?;
-        lib1.clone().write_to_file(file)?;
+            .open("test/test.rcslib")?;
+        lib1.clone().write_to_file(file, CompressionLevel::Ultra)?;
 
         let mut reader = ResourceLibraryReader::new("test.rcslib")?;
         let data = reader.read_file("test/b.txt")?;
