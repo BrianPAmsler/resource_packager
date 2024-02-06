@@ -3,10 +3,13 @@ name = "resource_packager"
 version = "0.1.0"
 edition = "2021"
 
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
 
 [dependencies]
 anyhow = "1.0.79"
+rust-lzma = { git = "https://github.com/BrianPAmsler/rust-lzma.git" }
 postcard = {version="1.0.8", features=["alloc"]}
-rust-lzma = "0.6.0"
 serde = "1.0.196"

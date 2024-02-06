@@ -106,7 +106,7 @@ impl From<Vec<u8>> for ByteStream {
     }
 }
 
-pub trait Resource: Read + Seek + Debug {}
+pub trait Resource: Read + Seek + Debug {} 
 impl<T: Read + Seek + Debug> Resource for T {}
 
 #[derive(Debug)]
