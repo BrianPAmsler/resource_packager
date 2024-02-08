@@ -121,12 +121,6 @@ impl ResourceLibraryWriter {
         ResourceLibraryWriter { map: BTreeMap::new() }
     }
 
-    // pub fn write_data(&mut self, path: String, data: Box<[u8]>) -> Result<()> {
-    //     self.map.insert(verify_string(path)?, Box::new(ByteStream::from(data)));
-
-    //     Ok(())
-    // }
-
     pub fn write_stream<T: Read + Seek + Debug + 'static>(&mut self, path: String, stream: T) -> Result<()> {
         self.map.insert(verify_string(path)?, Box::new(stream));
 
@@ -178,8 +172,7 @@ impl ResourceLibraryWriter {
         // Write header
         file.write(&HEADER_BYTES)?;
 
-        // Write metadataa
-        println!("initial index size: {}", index_data.len());
+        // Write metadata
         file.write(&index_data.len().to_be_bytes())?;
 
         let data_len_offset = file.stream_position()?;
@@ -221,50 +214,6 @@ impl ResourceLibraryWriter {
 
         Ok(())
     }
-
-    // pub fn read_from_file<'a>(mut file: File) -> Result<ResourceLibrary> {
-    //     let mut first_10 = [0u8; 10];
-    //     file.read(&mut first_10)?;
-
-    //     if first_10 != HEADER_BYTES {
-    //         bail!("File header does not match!");
-    //     }
-
-    //     // Read metadata
-    //     let mut index_size = [0u8; 8];
-    //     let mut data_size = [0u8; 8];
-
-    //     file.read(&mut index_size)?;
-    //     file.read(&mut data_size)?;
-
-    //     let index_size = u64::from_be_bytes(index_size);
-    //     let data_size = u64::from_be_bytes(data_size);
-
-    //     let mut index_data = vec![0u8; index_size as usize];
-    //     let mut data = vec![0u8; data_size as usize];
-
-    //     file.read(&mut index_data)?;
-    //     file.read(&mut data)?;
-
-    //     let reader = Reader::get_root(&index_data[..])?;
-    //     let index = Box::<[(String, u64, u64)]>::deserialize(reader)?;
-
-    //     let mut file_data = Vec::new();
-    //     file_data.reserve(index.len());
-    //     for (filename, pointer, size) in index.iter() {
-    //         let data = &data[*pointer as usize..*pointer as usize + *size as usize];
-    //         // Decompress data
-    //         let data = lzma::decompress(data)?;
-    //         // let struct_: FileData = postcard::from_bytes(&data)?;
-
-    //         file_data.push((filename.clone(), struct_));
-    //     }
-
-    //     let mut out_lib = ResourceLibrary::new();
-    //     file_data.into_iter().try_for_each(|(filename, struct_)| out_lib.write_data(filename, struct_.data))?;
-
-    //     Ok(out_lib)
-    // }
 
     pub fn get_all_files(&self) -> Box<[&str]> {
         self.map.keys().map(|path| &path[..]).collect()

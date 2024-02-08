@@ -144,6 +144,7 @@ mod tests {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open("test/testfile2.png")?;
 
         let read_file = reader.read_file("test/testfile.png")?;
