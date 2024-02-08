@@ -11,5 +11,5 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.79"
 rust-lzma = { git = "https://github.com/BrianPAmsler/rust-lzma.git" }
-postcard = {version="1.0.8", features=["alloc"]}
-serde = "1.0.196"
+serde = { version = "1.0.196", features = ["derive"] }
+thiserror = "1.0.56"

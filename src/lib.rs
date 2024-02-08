@@ -3,40 +3,62 @@ pub fn add(left: usize, right: usize) -> usize {
 }
 
 pub mod resource_library;
+mod index_serialization;
 
 #[cfg(test)]
 mod tests {
     use std::{fs::{File, OpenOptions}, io::Write};
 
     use anyhow::Result;
-    use serde::{Deserialize, Serialize};
+    use serde::Serialize;
+    
 
     use crate::resource_library::{CompressionLevel, ResourceLibraryReader};
 
-    use self::resource_library::ResourceLibrary;
+    use self::{index_serialization::{index_from_bytes, IndexSerializer}, resource_library::{ByteStream, ResourceLibraryWriter}};
 
     use super::*;
 
+    // #[test]
+    // fn read_write_u8() -> Result<()> {
+    //     let path1 = "test/abc/def";
+    //     let path2 = "test/abc/defg";
+
+    //     let data1 = [0, 1, 2, 3, 4, 5];
+    //     let data2 = [5, 4, 3, 2, 1, 0];
+
+    //     let mut lib = ResourceLibraryWriter::new();
+    //     lib.write_data(path1.to_owned(), data1.to_vec().into_boxed_slice())?;
+    //     lib.write_data(path2.to_owned(), data2.to_vec().into_boxed_slice())?;
+
+    //     let read1 = lib.read_data(path1)?;
+    //     let read2 = lib.read_data(path2)?;
+
+    //     println!("{:?}", &read1[..]);
+    //     println!("{:?}", &read2[..]);
+
+    //     assert_eq!(&data1, &read1[..]);
+    //     assert_eq!(&data2, &read2[..]);
+
+    //     Ok(())
+    // }
+
     #[test]
-    fn read_write_u8() -> Result<()> {
-        let path1 = "test/abc/def";
-        let path2 = "test/abc/defg";
+    fn serialization() -> Result<()> {
+        let index = vec![
+            ("test/a.txt".to_owned(), 0u64, 68u64),
+            ("test/b.txt".to_owned(), 68, 68),
+            ("test/c.txt".to_owned(), 136, 72),
+            ("test/testfile.png".to_owned(), 208, 5761572)
+        ].into_boxed_slice();
 
-        let data1 = [0, 1, 2, 3, 4, 5];
-        let data2 = [5, 4, 3, 2, 1, 0];
+        let mut serializer = IndexSerializer::new();
+        index.serialize(&mut serializer)?;
+        let data = serializer.take();
 
-        let mut lib = ResourceLibrary::new();
-        lib.write_data(path1.to_owned(), data1.to_vec().into_boxed_slice())?;
-        lib.write_data(path2.to_owned(), data2.to_vec().into_boxed_slice())?;
+        let deserialized_index = index_from_bytes(&data)?;
 
-        let read1 = lib.read_data(path1)?;
-        let read2 = lib.read_data(path2)?;
-
-        println!("{:?}", &read1[..]);
-        println!("{:?}", &read2[..]);
-
-        assert_eq!(&data1, &read1[..]);
-        assert_eq!(&data2, &read2[..]);
+        assert_eq!(&index, &deserialized_index);
 
         Ok(())
     }
@@ -45,20 +67,25 @@ mod tests {
     fn invalid_path() -> Result<()> {
         let path = "test/abc?/def";
 
-        let data = [0, 1, 2, 3, 4, 5];
+        let data = ByteStream::from([0, 1, 2, 3, 4, 5].to_vec());
 
-        let mut lib = ResourceLibrary::new();
-        lib.write_data(path.to_owned(), data.to_vec().into_boxed_slice()).expect_err("Path should be inalid!");
+        let mut lib = ResourceLibraryWriter::new();
+        lib.write_stream(path.to_owned(), data).expect_err("Path should be inalid!");
 
         Ok(())
     }
 
     #[test]
     fn test_file_read_write() -> Result<()> {
-        let mut lib1 = ResourceLibrary::new();
-        lib1.write_data("test/a.txt".to_owned(), "Test file A".bytes().collect())?;
-        lib1.write_data("test/b.txt".to_owned(), "Test file B ".bytes().collect())?;
-        lib1.write_data("test/c.txt".to_owned(), "Test file C  ".bytes().collect())?;
+        let mut lib1 = ResourceLibraryWriter::new();
+
+        let a = ByteStream::from("Test file A".bytes().collect::<Vec<u8>>());
+        let b = ByteStream::from("Test file B ".bytes().collect::<Vec<u8>>());
+        let c = ByteStream::from("Test file C  ".bytes().collect::<Vec<u8>>());
+
+        lib1.write_stream("test/a.txt".to_owned(), a)?;
+        lib1.write_stream("test/b.txt".to_owned(), b)?;
+        lib1.write_stream("test/c.txt".to_owned(), c)?;
 
         println!("Writing data...");
         let file = OpenOptions::new()
@@ -70,39 +97,12 @@ mod tests {
         lib1.write_to_file(file, CompressionLevel::Fast)?;
 
         println!("Reading data...");
-        let file = File::open("test/test.rcslib")?;
-        let lib2 = ResourceLibrary::read_from_file(file)?;
+        let lib2 = ResourceLibraryReader::new("test/test.rcslib")?;
 
-        let debug1 = format!("{:?}", lib1);
-        let debug2 = format!("{:?}", lib2);
+        let debug1 = format!("{:?}", lib1.get_all_files());
+        let debug2 = format!("{:?}", lib2.get_all_files());
 
         assert_eq!(debug1, debug2);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_file_reader() -> Result<()> {
-        let mut lib1 = ResourceLibrary::new();
-        lib1.write_data("test/a.txt".to_owned(), "Test file A".bytes().collect())?;
-        lib1.write_data("test/b.txt".to_owned(), "Test file B ".bytes().collect())?;
-        lib1.write_data("test/c.txt".to_owned(), "Test file C  ".bytes().collect())?;
-
-        println!("Writing data...");
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open("test/test.rcslib")?;
-        lib1.write_to_file(file, CompressionLevel::Ultra)?;
-
-        let mut reader = ResourceLibraryReader::new("test/test.rcslib")?;
-        let data = reader.read_file("test/b.txt")?;
-
-        println!("output data: '{}'", std::str::from_utf8(&data).unwrap());
-
-        assert_eq!(lib1.read_data("test/b.txt")?, data);
 
         Ok(())
     }
@@ -111,13 +111,18 @@ mod tests {
     fn test_file_stream() -> Result<()> {
         let testfile = File::open("test/testfile.png")?;
 
-        let mut lib1 = ResourceLibrary::new();
-        lib1.write_data("test/a.txt".to_owned(), "Test file A".bytes().collect())?;
-        lib1.write_data("test/b.txt".to_owned(), "Test file B ".bytes().collect())?;
-        lib1.write_stream("test/testfile.png".to_owned(), testfile)?;
-        lib1.write_data("test/c.txt".to_owned(), "Test file C  ".bytes().collect())?;
+        let mut lib1 = ResourceLibraryWriter::new();
 
-        println!("Writing data...");
+        let a = ByteStream::from("Test file A".bytes().collect::<Vec<u8>>());
+        let b = ByteStream::from("Test file B ".bytes().collect::<Vec<u8>>());
+        let c = ByteStream::from("Test file C  ".bytes().collect::<Vec<u8>>());
+
+        lib1.write_stream("test/a.txt".to_owned(), a)?;
+        lib1.write_stream("test/b.txt".to_owned(), b)?;
+        lib1.write_stream("test/c.txt".to_owned(), c)?;
+        lib1.write_stream("test/testfile.png".to_owned(), testfile)?;
+
+        println!("Writing file...");
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -126,6 +131,7 @@ mod tests {
             .open("test/test.rcslib")?;
         lib1.write_to_file(file, CompressionLevel::Ultra)?;
 
+        println!("Reading File...");
         let mut reader = ResourceLibraryReader::new("test/test.rcslib")?;
         let data = reader.read_file("test/b.txt")?;
 

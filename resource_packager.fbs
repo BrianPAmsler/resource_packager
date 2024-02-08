@@ -1,0 +1,12 @@
+attribute "original_order";
+table IndexEntry {
+    offset: uint64;
+    filename: string (required);
+    size: uint64;
+}
+
+table Index {
+    entries: [IndexEntry] (required);
+}
+
+root_type Index;

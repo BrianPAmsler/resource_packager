@@ -1,7 +1,9 @@
-use std::{collections::BTreeMap, fmt::Debug, fs::File, hash::{Hash, Hasher}, io::{ErrorKind, Read, Seek, SeekFrom, Write}, path::Path};
+use std::{collections::BTreeMap, fmt::Debug, fs::File, io::{Read, Seek, SeekFrom, Write}, path::Path};
 
 use anyhow::{anyhow, bail, Result};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+
+use crate::index_serialization::{index_from_bytes, IndexSerializer};
 
 const FORBIDDEN_CHARACTERS: &'static str = "\\?%*:|\"<>,;=";
 const HEADER_BYTES: [u8; 10] = [0x67, 0xD7, 0x70, 0x3A, 0x54, 0x3D, 0xDB, 0xF5, 0x17, 0x95]; // This is just a string of random numbers, it has no real signifigance
@@ -39,7 +41,7 @@ fn verify_string(string: String) -> Result<String> {
     Ok(string)
 }
 
-struct ByteStream {
+pub struct ByteStream {
     bytes: Box<[u8]>,
     position: usize
 }
@@ -110,20 +112,20 @@ pub trait Resource: Read + Seek + Debug {}
 impl<T: Read + Seek + Debug> Resource for T {}
 
 #[derive(Debug)]
-pub struct ResourceLibrary {
+pub struct ResourceLibraryWriter {
     map: BTreeMap<String, Box<dyn Resource>>
 }
 
-impl ResourceLibrary {
-    pub fn new() -> ResourceLibrary {
-        ResourceLibrary { map: BTreeMap::new() }
+impl ResourceLibraryWriter {
+    pub fn new() -> ResourceLibraryWriter {
+        ResourceLibraryWriter { map: BTreeMap::new() }
     }
 
-    pub fn write_data(&mut self, path: String, data: Box<[u8]>) -> Result<()> {
-        self.map.insert(verify_string(path)?, Box::new(ByteStream::from(data)));
+    // pub fn write_data(&mut self, path: String, data: Box<[u8]>) -> Result<()> {
+    //     self.map.insert(verify_string(path)?, Box::new(ByteStream::from(data)));
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     pub fn write_stream<T: Read + Seek + Debug + 'static>(&mut self, path: String, stream: T) -> Result<()> {
         self.map.insert(verify_string(path)?, Box::new(stream));
@@ -158,102 +160,115 @@ impl ResourceLibrary {
     }
 
     pub fn write_to_file<'a>(&mut self, mut file: File, compression_level: CompressionLevel) -> Result<()> {
-        // Create buffers
+        // Create index template
+
+        // Create index buffer
         let mut index = Vec::new();
-        let mut data_vec = Vec::new();
-
         // Since map is a tree map, iterator will be in order, sorted by filename
-        for (filename, resource) in self.map.iter_mut() {
-            let mut data = Vec::new();
-            resource.rewind()?;
-            resource.read_to_end(&mut data)?;
-            let data = data.into_boxed_slice();
-
-            let f_struct = FileData { signature: Box::new([]), data };
-
-            let f_data = postcard::to_allocvec(&f_struct)?;
-
-            // Compress data
-            let f_data = lzma::compress(&f_data, compression_level as u32)?;
-
-            // Write the current number of bytes in the buffer to our index
-            let slice_tuple = (filename.clone(), data_vec.len() as u64, f_data.len() as u64);
+        for (filename, _) in self.map.iter_mut() {
+            // Write zeroes to be replaced later
+            let slice_tuple = (filename.clone(), u64::MAX, u64::MAX);
             index.push(slice_tuple);
-
-            // Write to the data buffer
-            data_vec.extend(f_data.into_iter());
         }
 
-        let index_data = postcard::to_allocvec(&index)?;
+        let mut serializer = IndexSerializer::new();
+        index.serialize(&mut serializer)?;
+        let index_data = serializer.take();
 
         // Write header
         file.write(&HEADER_BYTES)?;
 
         // Write metadataa
+        println!("initial index size: {}", index_data.len());
         file.write(&index_data.len().to_be_bytes())?;
-        file.write(&data_vec.len().to_be_bytes())?;
+
+        let data_len_offset = file.stream_position()?;
+        file.write(&0u64.to_be_bytes())?;
 
         // Write index data
         file.write(&index_data)?;
 
-        // Write file data
-        file.write(&data_vec)?;
+        let mut data_len = 0;
+
+        // Since map is a tree map, iterator will be in order, sorted by filename
+        for (i, (_, resource)) in self.map.iter_mut().enumerate() {
+            let mut data = Vec::new();
+            resource.rewind()?;
+            resource.read_to_end(&mut data)?;
+            let data = data.into_boxed_slice();
+
+            // Compress data
+            let f_data = lzma::compress(&data, compression_level as u32)?;
+
+            // Write the current number of bytes in the buffer to our index
+            index[i].1 = data_len;
+            index[i].2 = f_data.len() as u64;
+
+            // Write to the file
+            file.write(&f_data[..])?;
+            data_len += f_data.len() as u64;
+        }
+
+        // Update data length
+        file.seek(SeekFrom::Start(data_len_offset))?;
+        file.write(&data_len.to_be_bytes())?;
+
+        // Update index
+        let mut serializer = IndexSerializer::new();
+        index.serialize(&mut serializer)?;
+        let index_data = serializer.take();
+        file.write(&index_data)?;
 
         Ok(())
     }
 
-    pub fn read_from_file<'a>(mut file: File) -> Result<ResourceLibrary> {
-        let mut first_10 = [0u8; 10];
-        file.read(&mut first_10)?;
+    // pub fn read_from_file<'a>(mut file: File) -> Result<ResourceLibrary> {
+    //     let mut first_10 = [0u8; 10];
+    //     file.read(&mut first_10)?;
 
-        if first_10 != HEADER_BYTES {
-            bail!("File header does not match!");
-        }
+    //     if first_10 != HEADER_BYTES {
+    //         bail!("File header does not match!");
+    //     }
 
-        // Read metadata
-        let mut index_size = [0u8; 8];
-        let mut data_size = [0u8; 8];
+    //     // Read metadata
+    //     let mut index_size = [0u8; 8];
+    //     let mut data_size = [0u8; 8];
 
-        file.read(&mut index_size)?;
-        file.read(&mut data_size)?;
+    //     file.read(&mut index_size)?;
+    //     file.read(&mut data_size)?;
 
-        let index_size = u64::from_be_bytes(index_size);
-        let data_size = u64::from_be_bytes(data_size);
+    //     let index_size = u64::from_be_bytes(index_size);
+    //     let data_size = u64::from_be_bytes(data_size);
 
-        let mut index_data = vec![0u8; index_size as usize];
-        let mut data = vec![0u8; data_size as usize];
+    //     let mut index_data = vec![0u8; index_size as usize];
+    //     let mut data = vec![0u8; data_size as usize];
 
-        file.read(&mut index_data)?;
-        file.read(&mut data)?;
+    //     file.read(&mut index_data)?;
+    //     file.read(&mut data)?;
 
-        let index: Box<[(String, u64, u64)]> = postcard::from_bytes(&index_data)?;
+    //     let reader = Reader::get_root(&index_data[..])?;
+    //     let index = Box::<[(String, u64, u64)]>::deserialize(reader)?;
 
-        let mut file_data = Vec::new();
-        file_data.reserve(index.len());
-        for (filename, pointer, size) in index.iter() {
-            let data = &data[*pointer as usize..*pointer as usize + *size as usize];
-            // Decompress data
-            let data = lzma::decompress(data)?;
-            let struct_: FileData = postcard::from_bytes(&data)?;
+    //     let mut file_data = Vec::new();
+    //     file_data.reserve(index.len());
+    //     for (filename, pointer, size) in index.iter() {
+    //         let data = &data[*pointer as usize..*pointer as usize + *size as usize];
+    //         // Decompress data
+    //         let data = lzma::decompress(data)?;
+    //         // let struct_: FileData = postcard::from_bytes(&data)?;
 
-            file_data.push((filename.clone(), struct_));
-        }
+    //         file_data.push((filename.clone(), struct_));
+    //     }
 
-        let mut out_lib = ResourceLibrary::new();
-        file_data.into_iter().try_for_each(|(filename, struct_)| out_lib.write_data(filename, struct_.data))?;
+    //     let mut out_lib = ResourceLibrary::new();
+    //     file_data.into_iter().try_for_each(|(filename, struct_)| out_lib.write_data(filename, struct_.data))?;
 
-        Ok(out_lib)
-    }
+    //     Ok(out_lib)
+    // }
 
     pub fn get_all_files(&self) -> Box<[&str]> {
         self.map.keys().map(|path| &path[..]).collect()
     }
-}
-
-#[derive(Serialize, Deserialize)]
-struct FileData {
-    signature: Box<[u8]>,
-    data: Box<[u8]>
 }
 
 pub struct ResourceLibraryReader {
@@ -287,7 +302,7 @@ impl ResourceLibraryReader {
 
         file.read(&mut index_data)?;
 
-        let index: Box<[(String, u64, u64)]> = postcard::from_bytes(&index_data)?;
+        let index = index_from_bytes(&index_data)?;
 
         let data_pointer = file.stream_position()?;
 
@@ -307,10 +322,8 @@ impl ResourceLibraryReader {
         self.file.read(&mut buffer)?;
 
         let decompressed = lzma::decompress(&buffer)?;
-
-        let file_data: FileData = postcard::from_bytes(&decompressed)?;
         
-        Ok(file_data.data)
+        Ok(decompressed.into_boxed_slice())
     }
 
     pub fn get_all_files(&self) -> Box<[&str]> {
