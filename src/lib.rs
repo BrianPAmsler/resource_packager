@@ -1,15 +1,11 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
-
 pub mod resource_library;
 mod index_serialization;
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::{File, OpenOptions}, io::Write};
+    use std::{fs::{File, OpenOptions}, io::Write, sync::Mutex};
 
-    use anyhow::Result;
+    use resource_library::Result;
     use serde::Serialize;
     
 
@@ -19,29 +15,7 @@ mod tests {
 
     use super::*;
 
-    // #[test]
-    // fn read_write_u8() -> Result<()> {
-    //     let path1 = "test/abc/def";
-    //     let path2 = "test/abc/defg";
-
-    //     let data1 = [0, 1, 2, 3, 4, 5];
-    //     let data2 = [5, 4, 3, 2, 1, 0];
-
-    //     let mut lib = ResourceLibraryWriter::new();
-    //     lib.write_data(path1.to_owned(), data1.to_vec().into_boxed_slice())?;
-    //     lib.write_data(path2.to_owned(), data2.to_vec().into_boxed_slice())?;
-
-    //     let read1 = lib.read_data(path1)?;
-    //     let read2 = lib.read_data(path2)?;
-
-    //     println!("{:?}", &read1[..]);
-    //     println!("{:?}", &read2[..]);
-
-    //     assert_eq!(&data1, &read1[..]);
-    //     assert_eq!(&data2, &read2[..]);
-
-    //     Ok(())
-    // }
+    static FILE_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn serialization() -> Result<()> {
@@ -77,6 +51,7 @@ mod tests {
 
     #[test]
     fn test_file_read_write() -> Result<()> {
+        let _guard = FILE_LOCK.lock().unwrap();
         let mut lib1 = ResourceLibraryWriter::new();
 
         let a = ByteStream::from("Test file A".bytes().collect::<Vec<u8>>());
@@ -109,7 +84,8 @@ mod tests {
 
     #[test]
     fn test_file_stream() -> Result<()> {
-        let testfile = File::open("test/testfile.png")?;
+        let _guard = FILE_LOCK.lock().unwrap();
+        let testfile = File::open("test/testfile.png").expect("Please add testfile.png to test folder.");
 
         let mut lib1 = ResourceLibraryWriter::new();
 

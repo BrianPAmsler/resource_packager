@@ -1,12 +1,33 @@
 use std::{collections::BTreeMap, fmt::Debug, fs::File, io::{Read, Seek, SeekFrom, Write}, path::Path};
 
-use anyhow::{anyhow, bail, Result};
 use serde::Serialize;
+use thiserror::Error;
 
-use crate::index_serialization::{index_from_bytes, IndexSerializer};
+use crate::index_serialization::{index_from_bytes, IndexSerializer, SerializationError};
 
 const FORBIDDEN_CHARACTERS: &'static str = "\\?%*:|\"<>,;=";
 const HEADER_BYTES: [u8; 10] = [0x67, 0xD7, 0x70, 0x3A, 0x54, 0x3D, 0xDB, 0xF5, 0x17, 0x95]; // This is just a string of random numbers, it has no real signifigance
+
+pub type Result<T> = std::result::Result<T, ResourceLibraryError>;
+
+#[derive(Error, Debug)]
+pub enum PathError {
+    #[error("Character '{0}' not allowed in path.")]
+    DisallowedCharacter(char),
+    #[error("No resource exists at path: {0}")]
+    InvalidPath(String)
+}
+
+#[derive(Error, Debug)]
+#[error(transparent)]
+pub enum ResourceLibraryError {
+    SerializationError(#[from] SerializationError),
+    PathError(#[from] PathError),
+    #[error("File header does not match!")]
+    FileHeaderError,
+    IoError(#[from] std::io::Error),
+    LZMAError(#[from] lzma::LzmaError)
+}
 
 #[derive(Clone, Copy)]
 pub enum CompressionLevel {
@@ -21,7 +42,7 @@ fn verify_str(str: &str) -> Result<&str> {
     for c in str.chars() {
         for forbidden in FORBIDDEN_CHARACTERS.chars() {
             if c == forbidden {
-                bail!("Character '{}' not allowed in path.", c);
+                return Err(PathError::DisallowedCharacter(c).into());
             }
         }
     }
@@ -33,7 +54,7 @@ fn verify_string(string: String) -> Result<String> {
     for c in string.chars() {
         for forbidden in FORBIDDEN_CHARACTERS.chars() {
             if c == forbidden {
-                bail!("Character '{}' not allowed in path.", c);
+                return Err(PathError::DisallowedCharacter(c).into());
             }
         }
     }
@@ -128,7 +149,7 @@ impl ResourceLibraryWriter {
     }
 
     pub fn read_data<'a>(&'a mut self, path: &str) -> Result<Box<[u8]>> {
-        match self.map.get_mut(verify_str(path)?).ok_or(anyhow!("No resource exists at path '{}'", path)) {
+        match self.map.get_mut(verify_str(path)?).ok_or(PathError::InvalidPath(path.to_owned()).into()) {
             Ok(resource) => {
                 let mut bytes = Vec::new();
                 resource.rewind()?;
@@ -141,7 +162,7 @@ impl ResourceLibraryWriter {
     }
 
     pub fn take_data(&mut self, path: &str) -> Result<Box<[u8]>> {
-        match self.map.remove(path).ok_or(anyhow!("No resource exists at path '{}'", path)) {
+        match self.map.remove(path).ok_or(PathError::InvalidPath(path.to_owned()).into()) {
             Ok(mut resource) => {
                 let mut bytes = Vec::new();
                 resource.rewind()?;
@@ -234,7 +255,7 @@ impl ResourceLibraryReader {
         file.read(&mut first_10)?;
 
         if first_10 != HEADER_BYTES {
-            bail!("File header does not match!");
+            return Err(ResourceLibraryError::FileHeaderError.into());
         }
 
         // Read metadata
@@ -261,7 +282,7 @@ impl ResourceLibraryReader {
     pub fn read_file<'a>(&'a mut self, path: &str) -> Result<Box<[u8]>> {
         let index = self.index.binary_search_by(|(file_path, _, _)| {
             file_path[..].cmp(path)
-        }).map_err(|_| anyhow!("File not found!"))?;
+        }).map_err(|_| PathError::InvalidPath(path.to_owned()))?;
 
         let index = &self.index[index];
         
