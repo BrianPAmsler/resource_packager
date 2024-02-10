@@ -172,7 +172,6 @@ impl<'a> Serializer for &'a mut IndexSerializer {
             return Err(SerializationError::SerializeError("unsupported serialization".to_owned()));
         }
 
-        println!("serializing sequence...");
         self.serialize_u64(len.unwrap() as u64)?;
         Ok(self)
     }
