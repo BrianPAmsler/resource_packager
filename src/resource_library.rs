@@ -1,7 +1,8 @@
-use std::{collections::BTreeMap, fmt::Debug, fs::File, io::{Read, Seek, SeekFrom, Write}, path::Path};
+use std::{collections::BTreeMap, fmt::Debug, io::{Read, Seek, SeekFrom, Write}};
 
 use serde::Serialize;
 use thiserror::Error;
+use xz2::{read::XzDecoder, write::XzEncoder};
 
 use crate::index_serialization::{index_from_bytes, IndexSerializer, SerializationError};
 
@@ -26,7 +27,7 @@ pub enum ResourceLibraryError {
     #[error("File header does not match!")]
     FileHeaderError,
     IoError(#[from] std::io::Error),
-    LZMAError(#[from] lzma::LzmaError)
+    LZMAError(#[from] xz2::stream::Error)
 }
 
 #[derive(Clone, Copy)]
@@ -174,7 +175,7 @@ impl ResourceLibraryWriter {
         }
     }
 
-    pub fn write_to_file<'a>(&mut self, mut file: File, compression_level: CompressionLevel) -> Result<()> {
+    pub fn write_to_stream<'a, W: Write + Seek>(&mut self, mut file: W, compression_level: CompressionLevel) -> Result<()> {
         // Create index template
 
         // Create index buffer
@@ -209,10 +210,12 @@ impl ResourceLibraryWriter {
             let mut data = Vec::new();
             resource.rewind()?;
             resource.read_to_end(&mut data)?;
-            let data = data.into_boxed_slice();
 
+            let mut f_data: Vec<u8> = Vec::new();
             // Compress data
-            let f_data = lzma::compress(&data, compression_level as u32)?;
+            let mut encoder = XzEncoder::new(&mut f_data, compression_level as u32);
+            encoder.write(&data)?;
+            encoder.finish()?;
 
             // Write the current number of bytes in the buffer to our index
             index[i].1 = data_len;
@@ -242,17 +245,21 @@ impl ResourceLibraryWriter {
 }
 
 pub struct ResourceLibraryReader {
-    file: File,
+    reader: Box<dyn ReadSeek>,
     index: Box<[(String, u64, u64)]>,
     data_pointer: u64
 }
 
+trait ReadSeek: Read + Seek {}
+
+impl<T: Read + Seek> ReadSeek for T {}
+
 impl ResourceLibraryReader {
-    pub fn new<P: AsRef<Path>>(path: P) -> Result<ResourceLibraryReader> {
-        let mut file = File::open(path)?;
+    pub fn new<R: Read + Seek + 'static>(reader: R) -> Result<ResourceLibraryReader> {
+        let mut reader = Box::new(reader);
 
         let mut first_10 = [0u8; 10];
-        file.read(&mut first_10)?;
+        reader.read(&mut first_10)?;
 
         if first_10 != HEADER_BYTES {
             return Err(ResourceLibraryError::FileHeaderError.into());
@@ -262,21 +269,21 @@ impl ResourceLibraryReader {
         let mut index_size = [0u8; 8];
         let mut data_size = [0u8; 8];
 
-        file.read(&mut index_size)?;
-        file.read(&mut data_size)?;
+        reader.read(&mut index_size)?;
+        reader.read(&mut data_size)?;
 
         let index_size = u64::from_be_bytes(index_size);
         let _data_size = u64::from_be_bytes(data_size);
 
         let mut index_data = vec![0u8; index_size as usize];
 
-        file.read(&mut index_data)?;
+        reader.read(&mut index_data)?;
 
         let index = index_from_bytes(&index_data)?;
 
-        let data_pointer = file.stream_position()?;
+        let data_pointer = reader.stream_position()?;
 
-        Ok(ResourceLibraryReader { file, index, data_pointer })
+        Ok(ResourceLibraryReader { reader, index, data_pointer })
     }
 
     pub fn read_file<'a>(&'a mut self, path: &str) -> Result<Box<[u8]>> {
@@ -286,12 +293,14 @@ impl ResourceLibraryReader {
 
         let index = &self.index[index];
         
-        self.file.seek(std::io::SeekFrom::Start(self.data_pointer + index.1))?;
+        self.reader.seek(std::io::SeekFrom::Start(self.data_pointer + index.1))?;
 
         let mut buffer = vec![0u8; index.2 as usize];
-        self.file.read(&mut buffer)?;
+        self.reader.read(&mut buffer)?;
 
-        let decompressed = lzma::decompress(&buffer)?;
+        let mut decompressed: Vec<u8> = Vec::new();
+        let mut decoder = XzDecoder::new(&buffer[..]);
+        decoder.read_to_end(&mut decompressed)?;
         
         Ok(decompressed.into_boxed_slice())
     }

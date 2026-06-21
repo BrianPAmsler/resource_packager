@@ -69,10 +69,11 @@ mod tests {
             .create(true)
             .truncate(true)
             .open("test/test.rcslib")?;
-        lib1.write_to_file(file, CompressionLevel::Fast)?;
+        lib1.write_to_stream(file, CompressionLevel::Fast)?;
 
         println!("Reading data...");
-        let lib2 = ResourceLibraryReader::new("test/test.rcslib")?;
+        let file = File::open("test/test.rcslib")?;
+        let lib2 = ResourceLibraryReader::new(file)?;
 
         let debug1 = format!("{:?}", lib1.get_all_files());
         let debug2 = format!("{:?}", lib2.get_all_files());
@@ -105,10 +106,11 @@ mod tests {
             .create(true)
             .truncate(true)
             .open("test/test.rcslib")?;
-        lib1.write_to_file(file, CompressionLevel::Ultra)?;
+        lib1.write_to_stream(file, CompressionLevel::Ultra)?;
 
         println!("Reading File...");
-        let mut reader = ResourceLibraryReader::new("test/test.rcslib")?;
+        let file = File::open("test/test.rcslib")?;
+        let mut reader = ResourceLibraryReader::new(file)?;
         let data = reader.read_file("test/b.txt")?;
 
         println!("output data: '{}'", std::str::from_utf8(&data).unwrap());
