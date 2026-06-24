@@ -1,5 +1,5 @@
 [package]
-name = "resource_packager"
+name = "resource-packager"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,6 +9,23 @@ edition = "2021"
 [build-dependencies]
 
 [dependencies]
+enable-ansi-support = { version = "0.3.1", optional = true }
 serde = { version = "1.0.196", features = ["derive"] }
-thiserror = "1.0.56"
-xz2 = "0.1.7"
+tempfile = { version = "3.27.0", optional = true}
+thiserror = "2.0.18"
+xz2 = { version = "0.1.7", optional = true}
+
+[features]
+default = ["read", "write"]
+build-binary = ["enable-ansi-support"]
+compression = ["xz2"]
+read = []
+write = ["tempfile"]
+
+[[bin]]
+name = "resource-packager"
+required-features = ["build-binary", "read", "write"]
+
+[dev-dependencies]
+base64 = "0.22.1"
+base64-literal = "0.1.0"
