@@ -420,7 +420,7 @@ struct StreamDeserializer<'de> {
 
 #[cfg(feature = "read")]
 impl<'de> StreamDeserializer<'de> {
-    pub fn new<R: Read + Seek + 'static>(stream: &'de mut R) -> StreamDeserializer<'de> {
+    pub fn new<R: Read + Seek>(stream: &'de mut R) -> StreamDeserializer<'de> {
         let stream: Peekable<&'de mut dyn ReadSeek> = Peekable::new(stream);
         StreamDeserializer { stream }
     }
@@ -864,7 +864,7 @@ pub fn serialize<S: Serialize>(value: &S) -> Result<Vec<u8>, SerializerError> {
 }
 
 #[cfg(feature = "read")]
-pub fn deserialize<'de, R: Read + Seek + 'static, D: Deserialize<'de>>(stream: &'de mut R) -> Result<D, SerializerError> {
+pub fn deserialize<'de, R: Read + Seek, D: Deserialize<'de>>(stream: &'de mut R) -> Result<D, SerializerError> {
     let mut deserializer = StreamDeserializer::new(stream);
     let value = D::deserialize(&mut deserializer)?;
 

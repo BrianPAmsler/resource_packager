@@ -238,20 +238,14 @@ pub mod read {
 
     use crate::{packager::{FileHeader, HEADER_BYTES, PathError, ResourcePackagerError, Result}, serialization};
 
-    pub struct ResourcePackageReader {
-        reader: Box<dyn ReadSeek>,
+    pub struct ResourcePackageReader<R: Read + Seek> {
+        reader: R,
         file_header: FileHeader,
         data_pointer: u64,
     }
 
-    trait ReadSeek: Read + Seek {}
-
-    impl<T: Read + Seek> ReadSeek for T {}
-
-    impl ResourcePackageReader {
-        pub fn new<R: Read + Seek + 'static>(reader: R) -> Result<ResourcePackageReader> {
-            let mut reader = Box::new(reader);
-
+    impl<R: Read + Seek> ResourcePackageReader<R> {
+        pub fn new(mut reader: R) -> Result<ResourcePackageReader<R>> {
             let file_header: FileHeader = serialization::deserialize(&mut reader)?;
 
             if file_header.header_bytes != HEADER_BYTES {
