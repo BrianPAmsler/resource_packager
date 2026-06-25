@@ -1,5 +1,6 @@
 use std::{fmt::{Debug, Display}, fs::{File, OpenOptions}, io::Write, path::{Path, PathBuf}};
 
+use clap::{Parser, Subcommand};
 use resource_packager::packager::{read::ResourcePackageReader, write::{Progress, ResourcePackageWriter}};
 #[cfg(feature = "compression")] 
 use resource_packager::packager::write::CompressionLevel;
@@ -87,15 +88,6 @@ fn read_dir_all(dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-macro_rules! usage {
-    () => {
-        {
-            eprintln!("Usage: resource-packager   pack path [file_name]\n       resource-packager unpack path [output_dir]");
-            std::process::exit(0)
-        }
-    };
-}
-
 fn print_progress(progress: Progress) {
     // Move cursor if progress is not 0
     match &progress {
@@ -167,41 +159,37 @@ mod differed_file {
     }
 }
 
+#[derive(Parser)]
+struct Args {
+    #[command(subcommand)]
+    command: Commands
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    Pack {
+        dir: PathBuf,
+        #[arg(short, long, default_value_t = CompressionLevel::None, value_enum)]
+        #[cfg(feature = "compression")]
+        compression_level: CompressionLevel,
+        #[arg(short, long)]
+        output_file: Option<PathBuf>,
+    },
+    Unpack {
+        file: PathBuf,
+        #[arg(short, long)]
+        output_dir: Option<PathBuf>,
+    }
+}
+
 fn main() {
     enable_ansi_support::enable_ansi_support().unwrap();
 
-    let args: Vec<String> = std::env::args().collect();
-    let (args, options): (Vec<_>, Vec<_>) = args.iter().map(|arg| &arg[..])
-        .partition(|arg| !arg.starts_with('-'));
-    let args = match args.as_slice() {
-        [_, command, path] => [*command, *path, ""],
-        [_, command, path, name] => [*command, *path, *name],
-        _ => usage!()
-    };
+    let args = Args::parse();
 
-    #[cfg(feature = "compression")] 
-    let mut compressed = false;
-    for option in options {
-        match option {
-            #[cfg(feature = "compression")] 
-            "-c" | "-compress" => {
-                if compressed {
-                    eprintln!("Duplicate option: 'compress'");
-                    std::process::exit(0);
-                }
-
-                compressed = true;
-            },
-            _ => {
-                eprintln!("Unknown option: '{}'", &option[1..]);
-                std::process::exit(0);
-            }
-        }
-    }
-
-    match args {
-        ["pack", dir, name] => {
-            let Ok(dir) = Path::new(dir).canonicalize() else {
+    match args.command {
+        Commands::Pack { #[cfg(feature = "compression")] compression_level, output_file, dir } => {
+            let Ok(dir) = Path::new(&dir).canonicalize() else {
                 eprintln!("Error: resource_directory must be a valid directory.");
                 return;
             };
@@ -211,13 +199,8 @@ fn main() {
                 return;
             }
 
-            let name = if name == "" {
-                PathBuf::from(dir.file_name().unwrap().to_str().unwrap()).with_added_extension("pack")
-            } else {
-                name.into()
-            };
+            let name = output_file.unwrap_or(PathBuf::from(dir.file_name().unwrap().to_str().unwrap()).with_added_extension("pack"));
 
-            let todo = (); // TODO: Add compression option in cli
             println!("Packing files:");
             println!("  Scanning directory...");
             let mut pack = ResourcePackageWriter::new();
@@ -237,22 +220,12 @@ fn main() {
                 .open(name)
                 .unwrap();
 
-            #[cfg(feature = "compression")]
-            let compression = match compressed {
-                true => CompressionLevel::Ultra,
-                false => CompressionLevel::None,
-            };
-
-            pack.finish_with_progress(out, #[cfg(feature = "compression")] compression, print_progress).unwrap();
+            pack.finish_with_progress(out, #[cfg(feature = "compression")] compression_level, print_progress).unwrap();
             println!("  Done");
         },
-        ["unpack", file, output_dir] => {
-            let path = Path::new(file);
-            let root = if output_dir == "" {
-                Path::new(path.file_prefix().unwrap())
-            } else {
-                Path::new(output_dir)
-            };
+        Commands::Unpack { output_dir, file } => {
+            let path = Path::new(&file);
+            let root = output_dir.unwrap_or(path.file_prefix().unwrap().into());
 
             let file = DifferedFileReader::new(path.to_owned());
             let mut pack = ResourcePackageReader::new(file).unwrap();
@@ -285,7 +258,6 @@ fn main() {
             }
 
             println!("  Done");
-        },
-        _ => usage!()
+        }
     }
 }

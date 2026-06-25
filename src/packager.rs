@@ -77,13 +77,14 @@ pub mod write {
 
     #[derive(Clone, Copy)]
     #[cfg(feature = "compression")]
+    #[cfg_attr(feature = "build-binary", derive(clap::ValueEnum))]
     pub enum CompressionLevel {
+        None = 99,
         Fastest = 1,
         Fast = 3,
         Normal = 5,
         Maximum = 7,
         Ultra = 9,
-        None = 99
     }
 
     fn verify_path(path: &Path) -> Result<()> {
